@@ -13,7 +13,7 @@ export interface ITimeNodeScanner {
   txPool: TxPool;
 
   start(): Promise<boolean>;
-  stop(): boolean;
+  stop(): Promise<boolean>;
 }
 
 export default class TimeNodeScanner extends ChainScanner implements ITimeNodeScanner {
@@ -43,13 +43,13 @@ export default class TimeNodeScanner extends ChainScanner implements ITimeNodeSc
     return this.scanning;
   }
 
-  public stop(): boolean {
+  public async stop(): Promise<boolean> {
     if (this.scanning) {
       // Clear scanning intervals.
       clearInterval(this.cacheInterval);
       clearInterval(this.chainInterval);
 
-      this.txPool.stop();
+      await this.txPool.stop();
 
       // Mark that we've stopped.
       this.config.logger.info('Scanner STOPPED');

@@ -11,6 +11,9 @@ export default class TimeNode {
   public config: Config;
   public scanner: Scanner;
   public router: Router;
+  public wsReconnect: WsReconnect;
+
+  public stopping: boolean;
 
   constructor(config: Config) {
     this.actions = new Actions(
@@ -35,10 +38,29 @@ export default class TimeNode {
     this.config = config;
     this.scanner = new Scanner(this.config, this.router);
 
-    const { logger, providerUrls } = this.config;
+    const { logger, maxRetries, providerUrls } = this.config;
     if (W3Util.isWSConnection(providerUrls[0])) {
       logger.debug('WebSockets provider detected! Setting up reconnect events...');
-      new WsReconnect(this).setup();
+      this.wsReconnect = new WsReconnect(maxRetries);
+      this.wsReconnect.setup(this.config);
+      this.wsReconnect.on('disconnect', async () => {
+        if (this.scanner.scanning && !this.stopping) {
+          this.stopping = true;
+          await this.stopScanning();
+          this.stopping = false;
+        }
+      });
+      this.wsReconnect.on('reconnect', async (web3: any) => {
+        if (!this.scanner.scanning) {
+          this.config.web3 = web3;
+          const nextUtil = new W3Util(web3);
+          this.config.util = nextUtil;
+          this.scanner.util = nextUtil;
+
+          await this.startScanning();
+          this.wsReconnect.setup(this.config);
+        }
+      });
     }
 
     this.startupMessage();
@@ -69,7 +91,7 @@ export default class TimeNode {
     return this.scanner.start();
   }
 
-  public stopScanning(): boolean {
+  public stopScanning(): Promise<boolean> {
     return this.scanner.stop();
   }
 

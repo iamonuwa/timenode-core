@@ -1,48 +1,58 @@
-import TimeNode from '../TimeNode';
+import Config from '../Config';
 import { ReconnectMsg } from '../Enum';
 import W3Util from '../Util';
 
+import * as EventEmitter from 'eventemitter3';
+/* tslint:disable */
 declare const setTimeout: any;
 
-export default class WsReconnect {
-  private timenode: TimeNode;
+export default class WsReconnect extends EventEmitter {
+  public config: Config;
+  public maxRetries: number;
+
   private reconnectTries: number = 0;
   private reconnecting: boolean = false;
   private reconnected: boolean = false;
 
-  constructor(timenode: TimeNode) {
-    this.timenode = timenode;
+  constructor(maxRetries: number) {
+    super();
+    this.maxRetries = maxRetries;
   }
 
-  public setup(): void {
+  public setup(config: Config): void {
+    this.config = config;
+
     const {
       logger,
       web3: { currentProvider }
-    } = this.timenode.config;
+    } = this.config;
 
     currentProvider.on('error', (err: any) => {
+      this.emit('disconnect');
       logger.debug(`[WS ERROR] ${err}`);
       setTimeout(async () => {
-        const msg: ReconnectMsg = await this.handleWsDisconnect();
-        logger.debug(`[WS RECONNECT] ${msg}`);
+        // const msg: ReconnectMsg =
+        await this.handleWsDisconnect();
+        // logger.debug(`[WS RECONNECT] ${msg}`);
       }, this.reconnectTries * 1000);
     });
 
     currentProvider.on('end', (err: any) => {
+      this.emit('disconnect');
       logger.debug(`[WS END] Type= ${err.type} Reason= ${err.reason}`);
       setTimeout(async () => {
-        const msg = await this.handleWsDisconnect();
-        logger.debug(`[WS RECONNECT] ${msg}`);
+        // const msg =
+        await this.handleWsDisconnect();
+        // logger.debug(`[WS RECONNECT] ${msg}`);
       }, this.reconnectTries * 1000);
     });
   }
 
-  private async handleWsDisconnect(): Promise<ReconnectMsg> {
+  public async handleWsDisconnect(): Promise<ReconnectMsg> {
     if (this.reconnected) {
       return ReconnectMsg.ALREADY_RECONNECTED;
     }
-    if (this.reconnectTries >= this.timenode.config.maxRetries) {
-      this.timenode.stopScanning();
+    if (this.reconnectTries >= this.config.maxRetries) {
       return ReconnectMsg.MAX_ATTEMPTS;
     }
     if (this.reconnecting) {
@@ -51,15 +61,15 @@ export default class WsReconnect {
 
     // Try to reconnect.
     this.reconnecting = true;
-    if (await this.wsReconnect()) {
-      await this.timenode.startScanning();
+    const nextWeb3 = await this.wsReconnect();
+    if (nextWeb3) {
+      this.emit('reconnect', nextWeb3);
       this.reconnectTries = 0;
-      this.setup();
       this.reconnected = true;
       this.reconnecting = false;
       setTimeout(() => {
         this.reconnected = false;
-      }, 10000);
+      }, 15000);
       return ReconnectMsg.RECONNECTED;
     }
 
@@ -72,26 +82,21 @@ export default class WsReconnect {
     return ReconnectMsg.FAIL;
   }
 
-  private async wsReconnect(): Promise<boolean> {
-    const {
-      config: { logger, providerUrls }
-    } = this.timenode;
+  private async wsReconnect(): Promise<any> {
+    const { logger, providerUrls } = this.config;
     logger.debug('Attempting WS Reconnect.');
     try {
       const providerUrl = providerUrls[this.reconnectTries % providerUrls.length];
-      this.timenode.config.web3 = W3Util.getWeb3FromProviderUrl(providerUrl);
-
-      this.timenode.config.util = new W3Util(this.timenode.config.web3);
-      this.timenode.scanner.util = this.timenode.config.util;
-      if (await this.timenode.config.util.isWatchingEnabled()) {
-        return true;
-      } else {
-        throw new Error('Invalid providerUrl! eth_getFilterLogs not enabled.');
+      const web3 = W3Util.getWeb3FromProviderUrl(providerUrl);
+      const nextUtil = new W3Util(web3);
+      if (!(await nextUtil.isWatchingEnabled())) {
+        throw new Error('Next Provider is not valid.');
       }
+      return web3;
     } catch (err) {
       logger.error(err.message);
       logger.info(`Reconnect tries: ${this.reconnectTries}`);
-      return false;
+      return null;
     }
   }
 }
